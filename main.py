@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from prompts import system_prompt
-from call_function import available_functions
+from call_function import available_functions, call_function
 
 load_dotenv()
 api_key = os.environ.get("GEMINI_API_KEY")
@@ -37,12 +37,24 @@ def main():
         print("Prompt tokens: " + str(response.usage_metadata.prompt_token_count))
         print("Response tokens: " + str((response.usage_metadata.total_token_count - response.usage_metadata.prompt_token_count)))
     
-    if response.function_calls:
-        for function_call in response.function_calls:
-            print(f"Calling function: {function_call.name}({function_call.args})")
-    else:
-        print(response.text)
+    function_results = []
 
+    if response.function_calls:
+        for fc in response.function_calls:
+            function_call_result = call_function(fc, verbose=args.verbose)
+            if not function_call_result.parts:
+                raise RuntimeError("Tool result Content.parts was empty")
+            function_response = function_call_result.parts[0].function_response
+            if function_response is None:
+                raise RuntimeError("Tool result Part.function_response was None")
+            response_payload = function_response.response
+            if response_payload is None:
+                raise RuntimeError("Tool FunctionResponse.response was None")
+            function_results.append(function_call_result.parts[0])
+            if args.verbose:
+                print(f"-> {response_payload}")
+        return
+    print(response.text)
 
 if __name__ == "__main__":
     main()
