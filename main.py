@@ -9,6 +9,8 @@ from call_function import available_functions, call_function
 load_dotenv()
 api_key = os.environ.get("GEMINI_API_KEY")
 
+MAX_ITERS = 20
+
 def main():
     if api_key == None:
         raise RuntimeError("API key not found")
@@ -22,39 +24,68 @@ def main():
 
     messages = [types.Content(role="user", parts=[types.Part(text=args.user_prompt)])]
 
-    response = client.models.generate_content(
-        model='gemini-2.5-flash', 
-        contents=messages,
-        config=types.GenerateContentConfig(
-            tools=[available_functions],
-            system_instruction=system_prompt, 
-            temperature=0
-        ),
-    )
-
-    if args.verbose:
-        print(f"User prompt: {args.user_prompt}")
-        print("Prompt tokens: " + str(response.usage_metadata.prompt_token_count))
-        print("Response tokens: " + str((response.usage_metadata.total_token_count - response.usage_metadata.prompt_token_count)))
+    for i in range(MAX_ITERS):
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=messages,
+            config=types.GenerateContentConfig(
+                tools=[available_functions],
+                system_instruction=system_prompt,
+                temperature=0,
+            ),
+        )
     
-    function_results = []
+        if args.verbose:
+            print(f"\n--- Iteration {i + 1}/{MAX_ITERS} ---")
+            print(f"User prompt: {args.user_prompt}")
 
-    if response.function_calls:
-        for fc in response.function_calls:
-            function_call_result = call_function(fc, verbose=args.verbose)
-            if not function_call_result.parts:
-                raise RuntimeError("Tool result Content.parts was empty")
-            function_response = function_call_result.parts[0].function_response
-            if function_response is None:
-                raise RuntimeError("Tool result Part.function_response was None")
-            response_payload = function_response.response
-            if response_payload is None:
-                raise RuntimeError("Tool FunctionResponse.response was None")
-            function_results.append(function_call_result.parts[0])
-            if args.verbose:
-                print(f"-> {response_payload}")
+            if getattr(response, "usage_metadata", None):
+                prompt_tokens = response.usage_metadata.prompt_token_count
+                total_tokens = response.usage_metadata.total_token_count
+                print("Prompt tokens:", prompt_tokens)
+                print("Response tokens:", total_tokens - prompt_tokens)
+
+        candidates = getattr(response, "candidates", None) or []
+
+        if not candidates:
+            raise RuntimeError("No candidates returned by model")
+
+        for cand in candidates:
+            if cand and cand.content:
+                messages.append(cand.content)
+
+        if response.function_calls:
+            function_responses = []
+
+            for fc in response.function_calls:
+                function_call_result = call_function(fc, verbose=args.verbose)
+
+                if not function_call_result.parts:
+                    raise RuntimeError("Tool result Content.parts was empty")
+
+                function_response = function_call_result.parts[0].function_response
+                if function_response is None:
+                    raise RuntimeError("Tool result Part.function_response was None")
+
+                payload = function_response.response
+                if payload is None:
+                    raise RuntimeError("Tool FunctionResponse.response was None")
+
+                function_responses.append(function_call_result.parts[0])
+
+                if args.verbose:
+                    print(f"-> {payload}")
+
+            messages.append(types.Content(role="user", parts=function_responses))
+
+            continue
+
+        print("Final response:")
+        print(response.text)
         return
-    print(response.text)
+
+    print(f"Error: Reached max iterations ({MAX_ITERS}) without a final response.")
+    sys.exit(1)
 
 if __name__ == "__main__":
     main()
